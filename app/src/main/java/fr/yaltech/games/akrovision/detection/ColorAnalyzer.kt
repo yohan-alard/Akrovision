@@ -11,34 +11,39 @@ class ColorAnalyzer(
 ) : ImageAnalysis.Analyzer {
 
     private val hsv = FloatArray(3)
-
-    // Map de couleurs en paysage (sera tournée en portrait via rotationDegrees dans AnalysisResult)
     private val MAP_W = 120
     private val MAP_H = 80
 
     override fun analyze(image: ImageProxy) {
-        val buffer = image.planes[0].buffer
-        val original = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
-        original.copyPixelsFromBuffer(buffer)
+        // try-catch global : protège contre les accès à une ImageProxy déjà fermée
+        // (arrive lors d'une rotation d'écran qui détruit le lifecycle)
+        try {
+            val buffer = image.planes[0].buffer
+            val original = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+            original.copyPixelsFromBuffer(buffer)
 
-        val small = Bitmap.createScaledBitmap(original, MAP_W, MAP_H, false)
-        original.recycle()
+            val small = Bitmap.createScaledBitmap(original, MAP_W, MAP_H, false)
+            original.recycle()
 
-        val pixels = IntArray(MAP_W * MAP_H)
-        small.getPixels(pixels, 0, MAP_W, 0, 0, MAP_W, MAP_H)
-        small.recycle()
+            val pixels = IntArray(MAP_W * MAP_H)
+            small.getPixels(pixels, 0, MAP_W, 0, 0, MAP_W, MAP_H)
+            small.recycle()
 
-        val colorMap = Array(MAP_H) { row ->
-            Array(MAP_W) { col ->
-                DistrictColor.fromPixel(pixels[row * MAP_W + col], hsv)
+            val colorMap = Array(MAP_H) { row ->
+                Array(MAP_W) { col ->
+                    DistrictColor.fromPixel(pixels[row * MAP_W + col], hsv)
+                }
             }
+
+            val (centerHsv, centerDistrict) = analyzeCenter(pixels, MAP_W, MAP_H)
+            val rotDeg = image.imageInfo.rotationDegrees
+
+            onResult(AnalysisResult(colorMap, MAP_W, MAP_H, rotDeg, centerHsv, centerDistrict))
+        } catch (_: Exception) {
+            // Image invalidée pendant la rotation : on ignore silencieusement
+        } finally {
+            try { image.close() } catch (_: Exception) {}
         }
-
-        val (centerHsv, centerDistrict) = analyzeCenter(pixels, MAP_W, MAP_H)
-        val rotDeg = image.imageInfo.rotationDegrees
-
-        image.close()
-        onResult(AnalysisResult(colorMap, MAP_W, MAP_H, rotDeg, centerHsv, centerDistrict))
     }
 
     private fun analyzeCenter(pixels: IntArray, w: Int, h: Int): Pair<FloatArray, DistrictColor?> {

@@ -39,16 +39,20 @@ class CameraViewModel : ViewModel() {
     fun clearSelection() { _selectedCell.value = null }
     fun heightAt(row: Int, col: Int) = _heights.value[row to col] ?: 1
 
-    // Appelé depuis l'UI quand la taille d'écran est connue, initialise l'hexRadius
+    // (Ré)initialise la grille hex selon les dimensions de l'écran.
+    // Se réexécute si la taille change de plus de 5 % (ex : rotation d'écran).
     fun initHexGrid(screenWidthPx: Float, screenHeightPx: Float) {
-        if (_hexGridState.value.hexRadius > 0f) return
         val state = _hexGridState.value
         val R = screenWidthPx / (state.numCols * HexGridState.SQRT3 + HexGridState.SQRT3 / 2f)
+        if (state.hexRadius > 0f && kotlin.math.abs(state.hexRadius - R) / state.hexRadius < 0.05f) return
         val gridH = state.numRows * R * 1.5f + R * 0.5f
         val initY = ((screenHeightPx - gridH) / 2f).coerceAtLeast(0f)
-        _hexGridState.value = state.copy(
+        _hexGridState.value = HexGridState(
+            numCols = state.numCols,
+            numRows = state.numRows,
             hexRadius = R,
-            panOffset = androidx.compose.ui.geometry.Offset(0f, initY)
+            panOffset = androidx.compose.ui.geometry.Offset(0f, initY),
+            scale = 1f
         )
     }
 
@@ -57,10 +61,44 @@ class CameraViewModel : ViewModel() {
     // Mise à jour des couleurs hex depuis l'UI (appelé à chaque frame d'analyse)
     fun updateHexColors(colors: Array<Array<DistrictColor?>>) { _hexColors.value = colors }
 
-    // Snapshot figé avant de naviguer vers l'écran de score
-    fun snapshotHexColors(colors: Array<Array<DistrictColor?>>) { _hexColors.value = colors }
+    // ─── Multiplicateurs ──────────────────────────────────────────────────────────────────
+
+    private val _hexMultipliers = MutableStateFlow<Array<Array<Boolean>>>(emptyArray())
+    val hexMultipliers: StateFlow<Array<Array<Boolean>>> = _hexMultipliers.asStateFlow()
+
+    // Étoiles confirmées par l'utilisateur pour chaque cellule multiplicateur
+    private val _cellStars = MutableStateFlow<Map<Pair<Int, Int>, Int>>(emptyMap())
+    val cellStars: StateFlow<Map<Pair<Int, Int>, Int>> = _cellStars.asStateFlow()
+
+    fun updateHexMultipliers(m: Array<Array<Boolean>>) { _hexMultipliers.value = m }
+
+    fun isMultiplierCell(row: Int, col: Int): Boolean =
+        _hexMultipliers.value.getOrNull(row)?.getOrNull(col) == true
+
+    fun setCellStars(row: Int, col: Int, stars: Int) {
+        _cellStars.value = _cellStars.value + (row to col to stars)
+        _selectedCell.value = null
+    }
+
+    // ─── Navigation vers le score ─────────────────────────────────────────────────────────
 
     fun getHexColors(): Array<Array<DistrictColor?>> = _hexColors.value
+
+    // Fige les couleurs et initialise les lauriers depuis les tuiles multiplicateurs détectées.
+    // L'utilisateur peut encore ajuster sur l'écran score.
+    fun snapshotAndInitLaurels(hexColors: Array<Array<DistrictColor?>>) {
+        _hexColors.value = hexColors
+        val computed = mutableMapOf<DistrictColor, Int>()
+        for ((cell, stars) in _cellStars.value) {
+            val (r, c) = cell
+            hexColors.getOrNull(r)?.getOrNull(c)?.let { d ->
+                if (d.givesPoints) computed[d] = (computed[d] ?: 0) + stars
+            }
+        }
+        _laurels.value = DistrictColor.entries
+            .filter { it.givesPoints }
+            .associate { it to (computed[it] ?: 0) }
+    }
 
     // Applique la hauteur à tout le groupe connexe de la même couleur
     fun setHeight(row: Int, col: Int, height: Int, hexColors: Array<Array<DistrictColor?>>) {

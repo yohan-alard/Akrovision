@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import fr.yaltech.games.akrovision.detection.HexSample
+import fr.yaltech.games.akrovision.detection.sampleHex
 import fr.yaltech.games.akrovision.model.AnalysisResult
 import fr.yaltech.games.akrovision.model.DistrictColor
 import kotlin.math.cos
@@ -32,35 +34,40 @@ fun HexOverlay(
     hexGridState: HexGridState,
     analysis: AnalysisResult?,
     heights: Map<Pair<Int, Int>, Int>,
+    cellStars: Map<Pair<Int, Int>, Int>,
     selectedCell: Pair<Int, Int>?,
     screenW: Float,
     screenH: Float,
     onGridStateChanged: (HexGridState) -> Unit,
     onCellTapped: (Int, Int) -> Unit,
-    onHexColorsComputed: (Array<Array<DistrictColor?>>) -> Unit
+    onHexColorsComputed: (Array<Array<DistrictColor?>>) -> Unit,
+    onHexMultipliersComputed: (Array<Array<Boolean>>) -> Unit
 ) {
     val textMeasurer = rememberTextMeasurer()
-
-    // rememberUpdatedState : accès aux dernières valeurs sans recréer les blocs pointerInput
     val currentState = rememberUpdatedState(hexGridState)
     val currentOnChanged = rememberUpdatedState(onGridStateChanged)
     val currentOnTapped = rememberUpdatedState(onCellTapped)
 
-    // Calcule les couleurs par hexagone à partir de la carte de couleurs et de la grille
-    val hexColors = remember(analysis, hexGridState) {
-        if (hexGridState.hexRadius <= 0f || screenW <= 0f || screenH <= 0f)
-            return@remember Array(0) { arrayOf<DistrictColor?>() }
+    val hexSamples = remember(analysis, hexGridState) {
+        if (hexGridState.hexRadius <= 0f || analysis == null || screenW <= 0f || screenH <= 0f)
+            return@remember Array(0) { arrayOf<HexSample>() }
+        val R = hexGridState.effectiveRadius
         Array(hexGridState.numRows) { row ->
-            Array<DistrictColor?>(hexGridState.numCols) { col ->
-                val center = hexGridState.centerOf(row, col)
-                analysis?.colorAt(center.x / screenW, center.y / screenH)
+            Array(hexGridState.numCols) { col ->
+                sampleHex(analysis, hexGridState.centerOf(row, col), R, screenW, screenH)
             }
         }
     }
 
-    // SideEffect : synchronisation synchrone sans overhead de coroutine
     SideEffect {
-        if (hexColors.isNotEmpty()) onHexColorsComputed(hexColors)
+        if (hexSamples.isNotEmpty()) {
+            onHexColorsComputed(Array(hexSamples.size) { r ->
+                Array(hexSamples[r].size) { c -> hexSamples[r][c].color }
+            })
+            onHexMultipliersComputed(Array(hexSamples.size) { r ->
+                Array(hexSamples[r].size) { c -> hexSamples[r][c].isMultiplier }
+            })
+        }
     }
 
     Canvas(
@@ -71,7 +78,6 @@ fun HexOverlay(
                     val s = currentState.value
                     val newScale = (s.scale * zoom).coerceIn(0.30f, 6f)
                     // Zoom autour du centroïde du pinch : le point sous les doigts reste fixe
-                    // newOffset = centroid + (oldOffset - centroid) * zoom + pan
                     val newOffset = centroid + (s.panOffset - centroid) * zoom + pan
                     currentOnChanged.value(s.copy(panOffset = newOffset, scale = newScale))
                 }
@@ -92,11 +98,23 @@ fun HexOverlay(
                 if (center.x < -R * 2 || center.x > screenW + R * 2 ||
                     center.y < -R * 2 || center.y > screenH + R * 2) continue
 
-                val district = hexColors.getOrNull(row)?.getOrNull(col)
+                val sample = hexSamples.getOrNull(row)?.getOrNull(col)
+                val district = sample?.color
+                val isMultiplier = sample?.isMultiplier == true
                 val height = heights[row to col] ?: 1
+                val stars = cellStars[row to col]
                 val isSelected = selectedCell?.first == row && selectedCell.second == col
 
-                drawHexagon(center, R * 0.90f, district, height, isSelected, textMeasurer)
+                drawHexagon(
+                    center = center,
+                    R = R * 0.90f,
+                    district = district,
+                    height = height,
+                    isSelected = isSelected,
+                    isMultiplier = isMultiplier,
+                    stars = stars,
+                    textMeasurer = textMeasurer
+                )
             }
         }
     }
@@ -108,24 +126,43 @@ private fun DrawScope.drawHexagon(
     district: DistrictColor?,
     height: Int,
     isSelected: Boolean,
+    isMultiplier: Boolean,
+    stars: Int?,
     textMeasurer: TextMeasurer
 ) {
     val path = hexPath(center, R)
 
-    if (district != null) {
-        val alpha = if (district.givesPoints) 0.42f else 0.15f
-        drawPath(path, color = Color(district.argb).copy(alpha = alpha))
+    if (isMultiplier && district != null) {
+        // Tuile multiplicateur : fond plein + bordure dorée
+        drawPath(path, color = Color(district.argb).copy(alpha = 0.78f))
+        drawPath(
+            path,
+            color = if (isSelected) Color.Yellow else Color(0xFFFFD700.toInt()),
+            style = Stroke(width = if (isSelected) 4.dp.toPx() else 2.5.dp.toPx())
+        )
+    } else {
+        if (district != null) {
+            val alpha = if (district.givesPoints) 0.42f else 0.15f
+            drawPath(path, color = Color(district.argb).copy(alpha = alpha))
+        }
+        drawPath(
+            path,
+            color = if (isSelected) Color.Yellow else Color.White.copy(alpha = 0.40f),
+            style = Stroke(width = if (isSelected) 3.dp.toPx() else 1.5.dp.toPx())
+        )
     }
-
-    drawPath(
-        path,
-        color = if (isSelected) Color.Yellow else Color.White.copy(alpha = 0.40f),
-        style = Stroke(width = if (isSelected) 3.dp.toPx() else 1.5.dp.toPx())
-    )
 
     if (R < 16.dp.toPx()) return
 
-    if (district != null && district.givesPoints) {
+    if (isMultiplier && district != null) {
+        val label = if (stars != null) "×$stars" else "×?"
+        drawText(
+            textMeasurer = textMeasurer,
+            text = label,
+            topLeft = Offset(center.x - R * 0.28f, center.y - R * 0.30f),
+            style = TextStyle(color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        )
+    } else if (district != null && district.givesPoints) {
         drawText(
             textMeasurer = textMeasurer,
             text = district.label.take(3),
@@ -140,7 +177,7 @@ private fun DrawScope.drawHexagon(
                 style = TextStyle(color = Color.Yellow, fontSize = 8.sp, fontWeight = FontWeight.Bold)
             )
         }
-    } else if (height > 1) {
+    } else if (!isMultiplier && height > 1) {
         drawText(
             textMeasurer = textMeasurer,
             text = "▲$height",
@@ -152,7 +189,7 @@ private fun DrawScope.drawHexagon(
 
 private fun hexPath(center: Offset, R: Float): Path = Path().apply {
     for (i in 0..5) {
-        val angle = (60f * i - 30f) * Math.PI.toFloat() / 180f  // pointy-top
+        val angle = (60f * i - 30f) * Math.PI.toFloat() / 180f
         val x = center.x + R * cos(angle)
         val y = center.y + R * sin(angle)
         if (i == 0) moveTo(x, y) else lineTo(x, y)

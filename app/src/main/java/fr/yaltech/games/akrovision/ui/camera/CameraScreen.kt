@@ -23,6 +23,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -31,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,8 +72,8 @@ private fun CameraPreviewWithOverlay(
     viewModel: CameraViewModel,
     onNavigateToScore: () -> Unit
 ) {
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val executor = remember { Executors.newSingleThreadExecutor() }
 
     val analysis by viewModel.analysis.collectAsStateWithLifecycle()
     val calibrationMode by viewModel.calibrationMode.collectAsStateWithLifecycle()
@@ -79,76 +81,99 @@ private fun CameraPreviewWithOverlay(
     val heights by viewModel.heights.collectAsStateWithLifecycle()
     val selectedCell by viewModel.selectedCell.collectAsStateWithLifecycle()
     val hexColors by viewModel.hexColors.collectAsStateWithLifecycle()
+    val hexMultipliers by viewModel.hexMultipliers.collectAsStateWithLifecycle()
+    val cellStars by viewModel.cellStars.collectAsStateWithLifecycle()
+
+    val previewView = remember { PreviewView(context) }
+
+    // ─── Cycle de vie caméra ──────────────────────────────────────────────────────────────
+    DisposableEffect(lifecycleOwner) {
+        val executor = Executors.newSingleThreadExecutor()
+        var disposed = false
+
+        ProcessCameraProvider.getInstance(context).addListener({
+            if (disposed) return@addListener
+            try {
+                val cameraProvider = ProcessCameraProvider.getInstance(context).get()
+                val preview = Preview.Builder().build()
+                    .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                val imageAnalysis = ImageAnalysis.Builder()
+                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                    .also { it.setAnalyzer(executor, ColorAnalyzer(onResult = viewModel::updateAnalysis)) }
+                cameraProvider.unbindAll()
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("AkroVision", "Liaison caméra échouée", e)
+            }
+        }, ContextCompat.getMainExecutor(context))
+
+        onDispose {
+            disposed = true
+            executor.shutdown()
+            try { ProcessCameraProvider.getInstance(context).get()?.unbindAll() }
+            catch (_: Exception) {}
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────────────
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val screenW = constraints.maxWidth.toFloat()
         val screenH = constraints.maxHeight.toFloat()
 
-        // Initialise la taille des hexagones en fonction des dimensions de l'écran
         LaunchedEffect(screenW, screenH) {
             if (screenW > 0 && screenH > 0) viewModel.initHexGrid(screenW, screenH)
         }
 
-        // Flux caméra
-        AndroidView(
-            factory = { ctx ->
-                val previewView = PreviewView(ctx)
-                ProcessCameraProvider.getInstance(ctx).addListener({
-                    val cameraProvider = ProcessCameraProvider.getInstance(ctx).get()
-                    val preview = Preview.Builder().build()
-                        .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                    val imageAnalysis = ImageAnalysis.Builder()
-                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-                        .also { it.setAnalyzer(executor, ColorAnalyzer(onResult = viewModel::updateAnalysis)) }
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis
-                    )
-                }, ContextCompat.getMainExecutor(ctx))
-                previewView
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-        // Overlay grille hexagonale
         if (!calibrationMode) {
             HexOverlay(
                 hexGridState = hexGridState,
                 analysis = analysis,
                 heights = heights,
+                cellStars = cellStars,
                 selectedCell = selectedCell,
                 screenW = screenW,
                 screenH = screenH,
                 onGridStateChanged = viewModel::updateHexGrid,
                 onCellTapped = viewModel::selectCell,
-                onHexColorsComputed = viewModel::updateHexColors
+                onHexColorsComputed = viewModel::updateHexColors,
+                onHexMultipliersComputed = viewModel::updateHexMultipliers
             )
         }
 
-        // Overlay de calibration
         if (calibrationMode) {
             CalibrationOverlay(analysis = analysis)
         }
 
-        // Picker de hauteur (apparaît quand une cellule est sélectionnée)
+        // Routing : tuile multiplicateur → StarPicker / tuile normale → HeightPicker
         val cell = selectedCell
         if (cell != null && !calibrationMode) {
             val (selRow, selCol) = cell
             val district = hexColors.getOrNull(selRow)?.getOrNull(selCol)
-            HeightPicker(
-                district = district,
-                currentHeight = viewModel.heightAt(selRow, selCol),
-                onSelect = { h ->
-                    viewModel.setHeight(selRow, selCol, h, hexColors)
-                },
-                onDismiss = viewModel::clearSelection,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
+            if (hexMultipliers.getOrNull(selRow)?.getOrNull(selCol) == true) {
+                StarPicker(
+                    currentStars = cellStars[selRow to selCol] ?: 1,
+                    district = district,
+                    onSelect = { stars -> viewModel.setCellStars(selRow, selCol, stars) },
+                    onDismiss = viewModel::clearSelection,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            } else {
+                HeightPicker(
+                    district = district,
+                    currentHeight = viewModel.heightAt(selRow, selCol),
+                    onSelect = { h -> viewModel.setHeight(selRow, selCol, h, hexColors) },
+                    onDismiss = viewModel::clearSelection,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
         }
 
-        // Bouton calibration (coin supérieur droit)
         Button(
             onClick = viewModel::toggleCalibration,
             modifier = Modifier
@@ -159,12 +184,11 @@ private fun CameraPreviewWithOverlay(
             Text(if (calibrationMode) "Détection" else "Calibrer")
         }
 
-        // Bouton calculer le score
         val hasDetection = hexColors.isNotEmpty() && hexColors.any { row -> row.any { it != null } }
         if (hasDetection && !calibrationMode && selectedCell == null) {
             Button(
                 onClick = {
-                    viewModel.snapshotHexColors(hexColors)
+                    viewModel.snapshotAndInitLaurels(hexColors)
                     onNavigateToScore()
                 },
                 modifier = Modifier
@@ -175,7 +199,6 @@ private fun CameraPreviewWithOverlay(
             }
         }
 
-        // Hint de déplacement (disparaît dès qu'il y a des détections)
         if (!hasDetection && !calibrationMode && hexGridState.hexRadius > 0f) {
             Text(
                 text = "Glissez / pincez pour aligner la grille sur les tuiles",
@@ -188,6 +211,56 @@ private fun CameraPreviewWithOverlay(
                     .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                     .padding(8.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun StarPicker(
+    currentStars: Int,
+    district: DistrictColor?,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.88f), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        val title = if (district?.givesPoints == true) "Multiplicateur — ${district.label}" else "Multiplicateur de score"
+        Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "Nombre d'étoiles sur la tuile",
+            color = Color.White.copy(alpha = 0.55f),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+
+        Row(
+            modifier = Modifier.padding(top = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            listOf(1, 2, 3).forEach { stars ->
+                if (stars == currentStars) {
+                    Button(
+                        onClick = { onSelect(stars) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD700))
+                    ) {
+                        Text("×$stars", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    }
+                } else {
+                    OutlinedButton(onClick = { onSelect(stars) }) {
+                        Text("×$stars", color = Color.White, fontSize = 18.sp)
+                    }
+                }
+            }
+        }
+
+        OutlinedButton(onClick = onDismiss, modifier = Modifier.padding(top = 8.dp)) {
+            Text("Annuler", color = Color.White.copy(alpha = 0.6f))
         }
     }
 }
@@ -230,10 +303,7 @@ private fun HeightPicker(
             }
         }
 
-        OutlinedButton(
-            onClick = onDismiss,
-            modifier = Modifier.padding(top = 8.dp)
-        ) {
+        OutlinedButton(onClick = onDismiss, modifier = Modifier.padding(top = 8.dp)) {
             Text("Annuler", color = Color.White.copy(alpha = 0.6f))
         }
     }
@@ -305,9 +375,7 @@ private fun HsvChip(label: String, value: String) {
 @Composable
 private fun PermissionRationale(onRequest: () -> Unit) {
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
+        modifier = Modifier.fillMaxSize().background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
