@@ -20,9 +20,10 @@ data class HexGridState(
         return Offset(x, y)
     }
 
-    // Cellule hexagonale sous le point d'écran, ou null si hors grille
+    // Cellule hexagonale sous le point d'écran, ou null si hors grille / grille non initialisée
     fun hexAt(pos: Offset): Pair<Int, Int>? {
         val R = effectiveRadius
+        if (R <= 0f) return null
         val approxRow = ((pos.y - panOffset.y - R) / (R * 1.5f)).toInt().coerceIn(0, numRows - 1)
         val approxCol = ((pos.x - panOffset.x) / (R * SQRT3)).toInt().coerceIn(0, numCols - 1)
 

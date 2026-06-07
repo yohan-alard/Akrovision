@@ -5,7 +5,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
@@ -58,22 +58,22 @@ fun HexOverlay(
         }
     }
 
-    LaunchedEffect(hexColors) {
+    // SideEffect : synchronisation synchrone sans overhead de coroutine
+    SideEffect {
         if (hexColors.isNotEmpty()) onHexColorsComputed(hexColors)
     }
 
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            // pointerInput(Unit) → le détecteur de gestes reste vivant, rememberUpdatedState
-            // fournit les valeurs fraîches à chaque événement
             .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
+                detectTransformGestures { centroid, pan, zoom, _ ->
                     val s = currentState.value
                     val newScale = (s.scale * zoom).coerceIn(0.30f, 6f)
-                    currentOnChanged.value(
-                        s.copy(panOffset = s.panOffset + pan, scale = newScale)
-                    )
+                    // Zoom autour du centroïde du pinch : le point sous les doigts reste fixe
+                    // newOffset = centroid + (oldOffset - centroid) * zoom + pan
+                    val newOffset = centroid + (s.panOffset - centroid) * zoom + pan
+                    currentOnChanged.value(s.copy(panOffset = newOffset, scale = newScale))
                 }
             }
             .pointerInput(Unit) {
