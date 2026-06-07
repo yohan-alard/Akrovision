@@ -7,62 +7,44 @@ import fr.yaltech.games.akrovision.model.AnalysisResult
 import fr.yaltech.games.akrovision.model.DistrictColor
 
 class ColorAnalyzer(
-    private val gridCols: Int = 4,
-    private val gridRows: Int = 4,
     private val onResult: (AnalysisResult) -> Unit
 ) : ImageAnalysis.Analyzer {
 
     private val hsv = FloatArray(3)
 
-    // Zone centrale du viseur : 20% de la largeur/hauteur de l'image réduite
-    private val centerRadiusFraction = 0.10f
+    // Map de couleurs en paysage (sera tournée en portrait via rotationDegrees dans AnalysisResult)
+    private val MAP_W = 120
+    private val MAP_H = 80
 
     override fun analyze(image: ImageProxy) {
         val buffer = image.planes[0].buffer
         val original = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
         original.copyPixelsFromBuffer(buffer)
 
-        val small = Bitmap.createScaledBitmap(original, 64, 48, false)
+        val small = Bitmap.createScaledBitmap(original, MAP_W, MAP_H, false)
         original.recycle()
 
-        val w = small.width
-        val h = small.height
-        val pixels = IntArray(w * h)
-        small.getPixels(pixels, 0, w, 0, 0, w, h)
+        val pixels = IntArray(MAP_W * MAP_H)
+        small.getPixels(pixels, 0, MAP_W, 0, 0, MAP_W, MAP_H)
         small.recycle()
 
-        val grid = analyzeGrid(pixels, w, h)
-        val (centerHsv, centerDistrict) = analyzeCenter(pixels, w, h)
-
-        image.close()
-        onResult(AnalysisResult(grid, centerHsv, centerDistrict))
-    }
-
-    private fun analyzeGrid(pixels: IntArray, w: Int, h: Int): Array<Array<DistrictColor?>> {
-        val cellW = w / gridCols
-        val cellH = h / gridRows
-        val grid = Array(gridRows) { arrayOfNulls<DistrictColor>(gridCols) }
-
-        for (row in 0 until gridRows) {
-            for (col in 0 until gridCols) {
-                val counts = mutableMapOf<DistrictColor, Int>()
-                for (y in (row * cellH) until ((row + 1) * cellH)) {
-                    for (x in (col * cellW) until ((col + 1) * cellW)) {
-                        val detected = DistrictColor.fromPixel(pixels[y * w + x], hsv)
-                        if (detected != null) counts[detected] = (counts[detected] ?: 0) + 1
-                    }
-                }
-                grid[row][col] = counts.maxByOrNull { it.value }?.key
+        val colorMap = Array(MAP_H) { row ->
+            Array(MAP_W) { col ->
+                DistrictColor.fromPixel(pixels[row * MAP_W + col], hsv)
             }
         }
-        return grid
+
+        val (centerHsv, centerDistrict) = analyzeCenter(pixels, MAP_W, MAP_H)
+        val rotDeg = image.imageInfo.rotationDegrees
+
+        image.close()
+        onResult(AnalysisResult(colorMap, MAP_W, MAP_H, rotDeg, centerHsv, centerDistrict))
     }
 
     private fun analyzeCenter(pixels: IntArray, w: Int, h: Int): Pair<FloatArray, DistrictColor?> {
-        val cx = w / 2
-        val cy = h / 2
-        val rx = (w * centerRadiusFraction).toInt().coerceAtLeast(2)
-        val ry = (h * centerRadiusFraction).toInt().coerceAtLeast(2)
+        val cx = w / 2; val cy = h / 2
+        val rx = (w * 0.08f).toInt().coerceAtLeast(2)
+        val ry = (h * 0.08f).toInt().coerceAtLeast(2)
 
         var hSum = 0f; var sSum = 0f; var vSum = 0f; var count = 0
         val counts = mutableMapOf<DistrictColor, Int>()
@@ -73,14 +55,13 @@ class ColorAnalyzer(
                 val pixel = pixels[y * w + x]
                 android.graphics.Color.colorToHSV(pixel, hsv)
                 hSum += hsv[0]; sSum += hsv[1]; vSum += hsv[2]; count++
-                val detected = DistrictColor.fromPixel(pixel, hsv)
-                if (detected != null) counts[detected] = (counts[detected] ?: 0) + 1
+                val d = DistrictColor.fromPixel(pixel, hsv)
+                if (d != null) counts[d] = (counts[d] ?: 0) + 1
             }
         }
 
-        val avgHsv = if (count > 0) floatArrayOf(hSum / count, sSum / count, vSum / count)
-                     else floatArrayOf(0f, 0f, 0f)
-        val detected = counts.maxByOrNull { it.value }?.key
-        return avgHsv to detected
+        val avg = if (count > 0) floatArrayOf(hSum / count, sSum / count, vSum / count)
+                  else floatArrayOf(0f, 0f, 0f)
+        return avg to counts.maxByOrNull { it.value }?.key
     }
 }

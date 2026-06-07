@@ -8,31 +8,30 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -51,40 +50,44 @@ import java.util.concurrent.Executors
 
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
-fun CameraScreen(viewModel: CameraViewModel = viewModel()) {
+fun CameraScreen(
+    viewModel: CameraViewModel = viewModel(),
+    onNavigateToScore: () -> Unit = {}
+) {
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
-    val result by viewModel.result.collectAsStateWithLifecycle()
-    val calibrationMode by viewModel.calibrationMode.collectAsStateWithLifecycle()
 
     when {
-        cameraPermission.status.isGranted -> {
-            CameraPreviewWithOverlay(
-                result = result,
-                calibrationMode = calibrationMode,
-                onResult = viewModel::updateResult,
-                onToggleCalibration = viewModel::toggleCalibration
-            )
-        }
-        cameraPermission.status.shouldShowRationale -> {
-            PermissionRationale(onRequest = { cameraPermission.launchPermissionRequest() })
-        }
+        cameraPermission.status.isGranted ->
+            CameraPreviewWithOverlay(viewModel = viewModel, onNavigateToScore = onNavigateToScore)
+        cameraPermission.status.shouldShowRationale ->
+            PermissionRationale { cameraPermission.launchPermissionRequest() }
         else -> cameraPermission.launchPermissionRequest()
     }
 }
 
 @Composable
 private fun CameraPreviewWithOverlay(
-    result: AnalysisResult?,
-    calibrationMode: Boolean,
-    onResult: (AnalysisResult) -> Unit,
-    onToggleCalibration: () -> Unit
+    viewModel: CameraViewModel,
+    onNavigateToScore: () -> Unit
 ) {
-    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
-    val textMeasurer = rememberTextMeasurer()
 
-    Box(Modifier.fillMaxSize()) {
+    val analysis by viewModel.analysis.collectAsStateWithLifecycle()
+    val calibrationMode by viewModel.calibrationMode.collectAsStateWithLifecycle()
+    val hexGridState by viewModel.hexGridState.collectAsStateWithLifecycle()
+    val heights by viewModel.heights.collectAsStateWithLifecycle()
+    val selectedCell by viewModel.selectedCell.collectAsStateWithLifecycle()
+    val hexColors by viewModel.hexColors.collectAsStateWithLifecycle()
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val screenW = constraints.maxWidth.toFloat()
+        val screenH = constraints.maxHeight.toFloat()
+
+        // Initialise la taille des hexagones en fonction des dimensions de l'écran
+        LaunchedEffect(screenW, screenH) {
+            if (screenW > 0 && screenH > 0) viewModel.initHexGrid(screenW, screenH)
+        }
 
         // Flux caméra
         AndroidView(
@@ -94,14 +97,14 @@ private fun CameraPreviewWithOverlay(
                     val cameraProvider = ProcessCameraProvider.getInstance(ctx).get()
                     val preview = Preview.Builder().build()
                         .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                    val analysis = ImageAnalysis.Builder()
+                    val imageAnalysis = ImageAnalysis.Builder()
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
-                        .also { it.setAnalyzer(executor, ColorAnalyzer(onResult = onResult)) }
+                        .also { it.setAnalyzer(executor, ColorAnalyzer(onResult = viewModel::updateAnalysis)) }
                     cameraProvider.unbindAll()
                     cameraProvider.bindToLifecycle(
-                        lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
+                        lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis
                     )
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView
@@ -109,57 +112,45 @@ private fun CameraPreviewWithOverlay(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Overlay grille de détection
-        val grid = result?.grid
-        if (grid != null && !calibrationMode) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val rows = grid.size
-                val cols = if (rows > 0) grid[0].size else return@Canvas
-                val cellW = size.width / cols
-                val cellH = size.height / rows
-
-                for (row in grid.indices) {
-                    for (col in grid[row].indices) {
-                        val district = grid[row][col]
-                        val left = col * cellW
-                        val top = row * cellH
-
-                        if (district != null) {
-                            // Pierre : fond discret, pas de label (pas de points)
-                            val alpha = if (district.givesPoints) 0.35f else 0.15f
-                            drawRect(
-                                color = Color(district.argb).copy(alpha = alpha),
-                                topLeft = Offset(left, top),
-                                size = Size(cellW, cellH)
-                            )
-                            if (district.givesPoints) {
-                                drawText(
-                                    textMeasurer = textMeasurer,
-                                    text = district.label,
-                                    topLeft = Offset(left + 4.dp.toPx(), top + 4.dp.toPx()),
-                                    style = TextStyle(color = Color.White, fontSize = 10.sp)
-                                )
-                            }
-                        }
-                        drawRect(
-                            color = Color.White.copy(alpha = 0.3f),
-                            topLeft = Offset(left, top),
-                            size = Size(cellW, cellH),
-                            style = Stroke(width = 1.dp.toPx())
-                        )
-                    }
-                }
-            }
+        // Overlay grille hexagonale
+        if (!calibrationMode) {
+            HexOverlay(
+                hexGridState = hexGridState,
+                analysis = analysis,
+                heights = heights,
+                selectedCell = selectedCell,
+                screenW = screenW,
+                screenH = screenH,
+                onGridStateChanged = viewModel::updateHexGrid,
+                onCellTapped = viewModel::selectCell,
+                onHexColorsComputed = viewModel::updateHexColors
+            )
         }
 
-        // Overlay calibration : viseur central + panneau HSV
+        // Overlay de calibration
         if (calibrationMode) {
-            CalibrationOverlay(result = result, textMeasurer = textMeasurer)
+            CalibrationOverlay(analysis = analysis)
         }
 
-        // Bouton bascule calibration/detection
+        // Picker de hauteur (apparaît quand une cellule est sélectionnée)
+        val cell = selectedCell
+        if (cell != null && !calibrationMode) {
+            val (selRow, selCol) = cell
+            val district = hexColors.getOrNull(selRow)?.getOrNull(selCol)
+            HeightPicker(
+                district = district,
+                currentHeight = viewModel.heightAt(selRow, selCol),
+                onSelect = { h ->
+                    viewModel.setHeight(selRow, selCol, h, hexColors)
+                },
+                onDismiss = viewModel::clearSelection,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+
+        // Bouton calibration (coin supérieur droit)
         Button(
-            onClick = onToggleCalibration,
+            onClick = viewModel::toggleCalibration,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
@@ -167,72 +158,131 @@ private fun CameraPreviewWithOverlay(
         ) {
             Text(if (calibrationMode) "Détection" else "Calibrer")
         }
+
+        // Bouton calculer le score
+        val hasDetection = hexColors.isNotEmpty() && hexColors.any { row -> row.any { it != null } }
+        if (hasDetection && !calibrationMode && selectedCell == null) {
+            Button(
+                onClick = {
+                    viewModel.snapshotHexColors(hexColors)
+                    onNavigateToScore()
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text("Calculer le score →")
+            }
+        }
+
+        // Hint de déplacement (disparaît dès qu'il y a des détections)
+        if (!hasDetection && !calibrationMode && hexGridState.hexRadius > 0f) {
+            Text(
+                text = "Glissez / pincez pour aligner la grille sur les tuiles",
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 56.dp, start = 16.dp, end = 16.dp)
+                    .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .padding(8.dp)
+            )
+        }
     }
 }
 
 @Composable
-private fun CalibrationOverlay(
-    result: AnalysisResult?,
-    textMeasurer: androidx.compose.ui.text.TextMeasurer
+private fun HeightPicker(
+    district: DistrictColor?,
+    currentHeight: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Box(Modifier.fillMaxSize()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.88f), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        val title = if (district?.givesPoints == true) "Hauteur — ${district.label}" else "Hauteur de la pile"
+        Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
 
-        // Viseur central
+        Row(
+            modifier = Modifier.padding(top = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            listOf(1, 2, 3).forEach { level ->
+                if (level == currentHeight) {
+                    Button(
+                        onClick = { onSelect(level) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107))
+                    ) {
+                        Text("$level", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    }
+                } else {
+                    OutlinedButton(onClick = { onSelect(level) }) {
+                        Text("$level", color = Color.White, fontSize = 18.sp)
+                    }
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = onDismiss,
+            modifier = Modifier.padding(top = 8.dp)
+        ) {
+            Text("Annuler", color = Color.White.copy(alpha = 0.6f))
+        }
+    }
+}
+
+@Composable
+private fun CalibrationOverlay(analysis: AnalysisResult?) {
+    Box(Modifier.fillMaxSize()) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val cx = size.width / 2
             val cy = size.height / 2
             val r = 40.dp.toPx()
-
-            // Cercle du viseur
             drawCircle(color = Color.White, radius = r, center = Offset(cx, cy), style = Stroke(2.dp.toPx()))
-            // Croix
             drawLine(Color.White, Offset(cx - r * 1.3f, cy), Offset(cx + r * 1.3f, cy), 1.5.dp.toPx())
             drawLine(Color.White, Offset(cx, cy - r * 1.3f), Offset(cx, cy + r * 1.3f), 1.5.dp.toPx())
         }
 
-        // Panneau HSV en bas
-        val hsv = result?.centerHsv
-        val district = result?.centerDistrict
+        val hsv = analysis?.centerHsv
+        val district = analysis?.centerDistrict
 
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                .background(Color.Black.copy(alpha = 0.78f), RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                 .padding(16.dp)
         ) {
-            Text(
-                text = "Calibration — pointez le viseur sur une tuile",
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = 12.sp
-            )
-
+            Text("Pointez le viseur sur une tuile", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
             if (hsv != null) {
                 Row(modifier = Modifier.padding(top = 8.dp)) {
                     HsvChip("H", "%.0f°".format(hsv[0]))
                     HsvChip("S", "%.2f".format(hsv[1]))
                     HsvChip("V", "%.2f".format(hsv[2]))
                 }
-
-                val statusColor = if (district != null) Color(0xFF4CAF50) else Color(0xFFF44336)
-                val statusText = if (district != null) "→ ${district.label} ✓" else "→ Non détecté ✗"
-
+                val ok = district != null
+                val districtLabel = district?.label ?: ""
                 Text(
-                    text = statusText,
-                    color = statusColor,
+                    text = if (ok) "→ $districtLabel ✓" else "→ Non détecté ✗",
+                    color = if (ok) Color(0xFF4CAF50) else Color(0xFFF44336),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(top = 8.dp)
                 )
-
-                if (district == null && hsv[0] > 0f) {
-                    Text(
-                        text = "Ajustez les plages HSV dans DistrictColor.kt",
-                        color = Color.Yellow,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
+                if (!ok) Text(
+                    "Ajustez les plages dans DistrictColor.kt",
+                    color = Color.Yellow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
     }
@@ -255,11 +305,17 @@ private fun HsvChip(label: String, value: String) {
 @Composable
 private fun PermissionRationale(onRequest: () -> Unit) {
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("La caméra est nécessaire pour détecter les tuiles.", color = Color.White, modifier = Modifier.padding(16.dp))
+            Text(
+                "La caméra est nécessaire pour détecter les tuiles.",
+                color = Color.White,
+                modifier = Modifier.padding(16.dp)
+            )
             Button(onClick = onRequest) { Text("Autoriser la caméra") }
         }
     }
