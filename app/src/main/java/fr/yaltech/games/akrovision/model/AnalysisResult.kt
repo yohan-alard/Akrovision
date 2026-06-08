@@ -20,4 +20,13 @@ data class AnalysisResult(
         val row = (iy * colorMapHeight).toInt().coerceIn(0, colorMapHeight - 1)
         return if (row in colorMap.indices && col in colorMap[0].indices) colorMap[row][col] else null
     }
+
+    // Inverse de colorAt : coordonnées caméra normalisées → coordonnées écran normalisées.
+    // Utilisé pour retrouver où s'affichent les pixels détectés (auto-snap de la grille).
+    fun cameraToScreen(camNormX: Float, camNormY: Float): Pair<Float, Float> = when (rotationDegrees) {
+        90  -> camNormY to (1f - camNormX)
+        180 -> (1f - camNormX) to (1f - camNormY)
+        270 -> (1f - camNormY) to camNormX
+        else -> camNormX to camNormY
+    }
 }

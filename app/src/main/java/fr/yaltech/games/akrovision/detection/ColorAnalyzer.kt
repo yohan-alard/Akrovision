@@ -19,6 +19,7 @@ class ColorAnalyzer(
         // (arrive lors d'une rotation d'écran qui détruit le lifecycle)
         try {
             val buffer = image.planes[0].buffer
+            buffer.rewind()  // garantit la position 0 quel que soit l'état du buffer
             val original = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
             original.copyPixelsFromBuffer(buffer)
 

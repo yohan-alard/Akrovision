@@ -174,14 +174,23 @@ private fun CameraPreviewWithOverlay(
             }
         }
 
-        Button(
-            onClick = viewModel::toggleCalibration,
+        // Boutons top-right : Calibrer | Cadrer (auto-snap sur les tuiles détectées)
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(12.dp)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(if (calibrationMode) "Détection" else "Calibrer")
+            val currentAnalysis = analysis
+            if (!calibrationMode && currentAnalysis != null) {
+                Button(onClick = { viewModel.snapGridToTiles(currentAnalysis, screenW, screenH) }) {
+                    Text("Cadrer")
+                }
+            }
+            Button(onClick = viewModel::toggleCalibration) {
+                Text(if (calibrationMode) "Détection" else "Calibrer")
+            }
         }
 
         val hasDetection = hexColors.isNotEmpty() && hexColors.any { row -> row.any { it != null } }
@@ -201,7 +210,7 @@ private fun CameraPreviewWithOverlay(
 
         if (!hasDetection && !calibrationMode && hexGridState.hexRadius > 0f) {
             Text(
-                text = "Glissez / pincez pour aligner la grille sur les tuiles",
+                text = "Glissez / pincez pour aligner · tournez avec 2 doigts",
                 color = Color.White.copy(alpha = 0.65f),
                 fontSize = 12.sp,
                 modifier = Modifier

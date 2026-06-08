@@ -58,6 +58,49 @@ class CameraViewModel : ViewModel() {
 
     fun updateHexGrid(state: HexGridState) { _hexGridState.value = state }
 
+    // Analyse la colorMap pour trouver la boîte englobante des tuiles détectées,
+    // puis ajuste automatiquement le zoom et la position de la grille pour couvrir cette zone.
+    fun snapGridToTiles(analysis: fr.yaltech.games.akrovision.model.AnalysisResult, screenW: Float, screenH: Float) {
+        val state = _hexGridState.value
+        if (state.hexRadius <= 0f || screenW <= 0f || screenH <= 0f) return
+
+        var minSX = 1f; var maxSX = 0f
+        var minSY = 1f; var maxSY = 0f
+        var count = 0
+
+        for (row in analysis.colorMap.indices) {
+            for (col in analysis.colorMap[row].indices) {
+                analysis.colorMap[row][col] ?: continue
+                val camNormX = (col + 0.5f) / analysis.colorMapWidth
+                val camNormY = (row + 0.5f) / analysis.colorMapHeight
+                val (sx, sy) = analysis.cameraToScreen(camNormX, camNormY)
+                if (sx < minSX) minSX = sx; if (sx > maxSX) maxSX = sx
+                if (sy < minSY) minSY = sy; if (sy > maxSY) maxSY = sy
+                count++
+            }
+        }
+
+        if (count < 80) return  // pas assez de pixels pour cadrer avec confiance
+
+        val margin = 1.25f  // marge autour des tuiles détectées
+        val boxW = (maxSX - minSX) * screenW
+        val boxH = (maxSY - minSY) * screenH
+        val boxCX = ((minSX + maxSX) / 2f) * screenW
+        val boxCY = ((minSY + maxSY) / 2f) * screenH
+
+        val rFromW = boxW * margin / (state.numCols * HexGridState.SQRT3 + HexGridState.SQRT3 / 2f)
+        val rFromH = boxH * margin / (state.numRows * 1.5f + 0.5f)
+        val newEffR = minOf(rFromW, rFromH).coerceIn(state.hexRadius * 0.1f, state.hexRadius * 5f)
+
+        val gridW = (state.numCols * HexGridState.SQRT3 + HexGridState.SQRT3 / 2f) * newEffR
+        val gridH = (state.numRows * 1.5f + 0.5f) * newEffR
+
+        _hexGridState.value = state.copy(
+            scale = newEffR / state.hexRadius,
+            panOffset = androidx.compose.ui.geometry.Offset(boxCX - gridW / 2f, boxCY - gridH / 2f)
+        )
+    }
+
     // Mise à jour des couleurs hex depuis l'UI (appelé à chaque frame d'analyse)
     fun updateHexColors(colors: Array<Array<DistrictColor?>>) { _hexColors.value = colors }
 

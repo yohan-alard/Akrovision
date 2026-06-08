@@ -26,6 +26,7 @@ import fr.yaltech.games.akrovision.detection.HexSample
 import fr.yaltech.games.akrovision.detection.sampleHex
 import fr.yaltech.games.akrovision.model.AnalysisResult
 import fr.yaltech.games.akrovision.model.DistrictColor
+import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -48,7 +49,8 @@ fun HexOverlay(
     val currentOnChanged = rememberUpdatedState(onGridStateChanged)
     val currentOnTapped = rememberUpdatedState(onCellTapped)
 
-    val hexSamples = remember(analysis, hexGridState) {
+    // screenW et screenH sont des clés : si l'écran pivote, on recalcule les échantillons
+    val hexSamples = remember(analysis, hexGridState, screenW, screenH) {
         if (hexGridState.hexRadius <= 0f || analysis == null || screenW <= 0f || screenH <= 0f)
             return@remember Array(0) { arrayOf<HexSample>() }
         val R = hexGridState.effectiveRadius
@@ -74,12 +76,12 @@ fun HexOverlay(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                detectTransformGestures { centroid, pan, zoom, _ ->
+                detectTransformGestures { centroid, pan, zoom, rotDelta ->
                     val s = currentState.value
                     val newScale = (s.scale * zoom).coerceIn(0.30f, 6f)
-                    // Zoom autour du centroïde du pinch : le point sous les doigts reste fixe
+                    val newRotation = (s.rotationDegrees + rotDelta).coerceIn(-45f, 45f)
                     val newOffset = centroid + (s.panOffset - centroid) * zoom + pan
-                    currentOnChanged.value(s.copy(panOffset = newOffset, scale = newScale))
+                    currentOnChanged.value(s.copy(panOffset = newOffset, scale = newScale, rotationDegrees = newRotation))
                 }
             }
             .pointerInput(Unit) {
@@ -91,6 +93,7 @@ fun HexOverlay(
     ) {
         if (hexGridState.hexRadius <= 0f) return@Canvas
         val R = hexGridState.effectiveRadius
+        val rotDeg = hexGridState.rotationDegrees
 
         for (row in 0 until hexGridState.numRows) {
             for (col in 0 until hexGridState.numCols) {
@@ -108,6 +111,7 @@ fun HexOverlay(
                 drawHexagon(
                     center = center,
                     R = R * 0.90f,
+                    rotationDeg = rotDeg,
                     district = district,
                     height = height,
                     isSelected = isSelected,
@@ -123,6 +127,7 @@ fun HexOverlay(
 private fun DrawScope.drawHexagon(
     center: Offset,
     R: Float,
+    rotationDeg: Float,
     district: DistrictColor?,
     height: Int,
     isSelected: Boolean,
@@ -130,10 +135,9 @@ private fun DrawScope.drawHexagon(
     stars: Int?,
     textMeasurer: TextMeasurer
 ) {
-    val path = hexPath(center, R)
+    val path = hexPath(center, R, rotationDeg)
 
     if (isMultiplier && district != null) {
-        // Tuile multiplicateur : fond plein + bordure dorée
         drawPath(path, color = Color(district.argb).copy(alpha = 0.78f))
         drawPath(
             path,
@@ -187,9 +191,11 @@ private fun DrawScope.drawHexagon(
     }
 }
 
-private fun hexPath(center: Offset, R: Float): Path = Path().apply {
+// Le rotationDeg est la rotation de la grille : chaque hexagone tourne sur lui-même
+// du même angle pour que la forme reste cohérente avec l'alignement de la grille.
+private fun hexPath(center: Offset, R: Float, rotationDeg: Float = 0f): Path = Path().apply {
     for (i in 0..5) {
-        val angle = (60f * i - 30f) * Math.PI.toFloat() / 180f
+        val angle = (60f * i - 30f + rotationDeg) * PI.toFloat() / 180f
         val x = center.x + R * cos(angle)
         val y = center.y + R * sin(angle)
         if (i == 0) moveTo(x, y) else lineTo(x, y)
